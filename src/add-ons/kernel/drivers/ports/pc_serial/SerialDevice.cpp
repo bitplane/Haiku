@@ -31,7 +31,7 @@ SerialDevice::SerialDevice(const struct serial_support_descriptor *device,
 		fMaster(master),
 		fCachedIER(0x0),
 		fCachedIIR(0x1),
-		fPendingDPC(0),
+		fDPCActive(false),
 		fReadBufferAvail(0),
 		fReadBufferIn(0),
 		fReadBufferOut(0),
@@ -51,6 +51,7 @@ SerialDevice::SerialDevice(const struct serial_support_descriptor *device,
 		fDeviceThread(-1),
 		fStopDeviceThread(false)
 {
+	B_INITIALIZE_SPINLOCK(&fInterruptLock);
 	memset(&fTTYConfig, 0, sizeof(termios));
 	fTTYConfig.c_cflag = B9600 | CS8 | CREAD;
 	memset(fReadBuffer, 'z', DEF_BUFFER_SIZE);
@@ -94,8 +95,7 @@ SerialDevice::Init()
 	fWriteBufferSem = create_sem(0, "pc_serial:done_write");
 
 	// disable IRQ
-	fCachedIER = 0;
-	WriteReg8(IER, fCachedIER);
+	_SetIER(0);
 
 	// disable DLAB
 	WriteReg8(LCR, 0);
@@ -272,8 +272,7 @@ SerialDevice::Service(struct tty *tty, uint32 op, void *buffer, size_t length)
 				// remove the handler
 				remove_io_interrupt_handler(IRQ(), pc_serial_interrupt, this);
 				// disable IRQ
-				fCachedIER = 0;
-				WriteReg8(IER, fCachedIER);
+				_SetIER(0);
 				WriteReg8(MCR, 0);
 			}
 
@@ -286,8 +285,7 @@ SerialDevice::Service(struct tty *tty, uint32 op, void *buffer, size_t length)
 				//
 				WriteReg8(MCR, MCR_DTR | MCR_RTS | MCR_IRQ_EN /*| MCR_LOOP*//*XXXXXXX*/);
 				// enable irqs
-				fCachedIER = IER_RLS | IER_MS | IER_RDA;
-				WriteReg8(IER, fCachedIER);
+				_SetIER(IER_RLS | IER_MS | IER_RDA);
 				//WriteReg8(IER, IER_RDA);
 			}
 
@@ -340,10 +338,8 @@ SerialDevice::Service(struct tty *tty, uint32 op, void *buffer, size_t length)
 		case TTYOSTART:
 			TRACE("TTYOSTART\n");
 			// enable irqs
-			fCachedIER |= IER_THRE;
 			// XXX: toggle the bit to make VirtualBox happy !?
-			WriteReg8(IER, fCachedIER & ~IER_THRE);
-			WriteReg8(IER, fCachedIER);
+			_UpdateIER(IER_THRE, 0, true);
 			return true;
 		case TTYOSYNC:
 			TRACE("TTYOSYNC\n");
@@ -385,6 +381,15 @@ SerialDevice::IsInterruptPending()
 {
 	TRACE(("IsInterruptPending()\n"));
 
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&fInterruptLock);
+
+	if (fDPCActive) {
+		release_spinlock(&fInterruptLock);
+		restore_interrupts(state);
+		return false;
+	}
+
 	// because reading the IIR acknowledges some IRQ conditions,
 	// the next time we'll read we'll miss the IRQ condition
 	// so we just cache the value for the real handler
@@ -396,17 +401,21 @@ SerialDevice::IsInterruptPending()
 		// temporarily mask the IRQ
 		// else VirtualBox triggers one per every written byte it seems
 		// not sure it's required on real hardware
-		WriteReg8(IER, fCachedIER & ~(IER_RLS | IER_MS | IER_RDA | IER_THRE));
+		_WriteReg8(IER,
+			fCachedIER & ~(IER_RLS | IER_MS | IER_RDA | IER_THRE));
 
-		atomic_add(&fPendingDPC, 1);
+		fDPCActive = true;
 	}
+
+	release_spinlock(&fInterruptLock);
+	restore_interrupts(state);
 
 	return pending; // 0 means yes
 }
 
 
 int32
-SerialDevice::InterruptHandler()
+SerialDevice::HandleDPC()
 {
 	int32 ret = B_UNHANDLED_INTERRUPT;
 	//XXX: what should we do here ? (certainly not use a mutex !)
@@ -414,7 +423,7 @@ SerialDevice::InterruptHandler()
 	uint8 iir, lsr, msr;
 	uint8 buffer[64];
 	int tries = 8; // avoid busy looping
-	TRACE(("InterruptHandler()\n"));
+	TRACE(("HandleDPC()\n"));
 
 	// start with the first (cached) irq condition
 	iir = fCachedIIR;
@@ -448,7 +457,12 @@ SerialDevice::InterruptHandler()
 			if (readable == 0) {
 				release_sem_etc(fDoneWrite, 1, B_DO_NOT_RESCHEDULE);
 				// mask it until there's data again
-				fCachedIER &= ~IER_THRE;
+				_UpdateIER(0, IER_THRE);
+				// Avoid losing data queued between the empty check and masking THRE.
+				gTTYModule->tty_control(fDeviceTTYCookie, FIONREAD, &readable,
+					sizeof(readable));
+				if (readable > 0)
+					_UpdateIER(IER_THRE, 0);
 				break;
 			}
 
@@ -524,13 +538,58 @@ SerialDevice::InterruptHandler()
 		iir = ReadReg8(IIR);
 	}
 
-	atomic_add(&fPendingDPC, -1);
-
-	// unmask IRQ
-	WriteReg8(IER, fCachedIER);
+	_FinishDPC();
 
 	TRACE_FUNCRET("< IRQ:%d\n", ret);
 	return ret;
+}
+
+
+void
+SerialDevice::DPCQueueFailed()
+{
+	_FinishDPC();
+}
+
+
+void
+SerialDevice::_FinishDPC()
+{
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&fInterruptLock);
+
+	fDPCActive = false;
+
+	// unmask IRQ
+	_WriteReg8(IER, fCachedIER);
+
+	release_spinlock(&fInterruptLock);
+	restore_interrupts(state);
+}
+
+
+void
+SerialDevice::_SetIER(uint8 value)
+{
+	_UpdateIER(value, 0xff);
+}
+
+
+void
+SerialDevice::_UpdateIER(uint8 set, uint8 clear, bool toggleTHRE)
+{
+	cpu_status state = disable_interrupts();
+	acquire_spinlock(&fInterruptLock);
+
+	fCachedIER = (fCachedIER & ~clear) | set;
+	if (!fDPCActive) {
+		if (toggleTHRE)
+			_WriteReg8(IER, fCachedIER & ~IER_THRE);
+		_WriteReg8(IER, fCachedIER);
+	}
+
+	release_spinlock(&fInterruptLock);
+	restore_interrupts(state);
 }
 
 
@@ -751,7 +810,7 @@ SerialDevice::Free()
 
 	// wait until currently executing DPC is done. In case another one
 	// is run beyond this point it will just bail out on !IsOpen().
-	//while (atomic_get(&fPendingDPC))
+	//while (fDPCActive)
 	//	snooze(1000);
 
 	gTTYModule->tty_destroy_cookie(fSystemTTYCookie);
@@ -1084,6 +1143,17 @@ SerialDevice::WriteReg8(int reg, uint8 value)
 {
 //	TRACE_ALWAYS("WR8(0x%04x+%d, %d [0x%x])\n", IOBase(), reg, value, value);
 	TRACE/*_ALWAYS*/("WR8(%d, %d [0x%x])\n", reg, value, value);
+	if (fBus != B_ISA_BUS && fBus != B_PCI_BUS) {
+		TRACE_ALWAYS("%s: unknown bus!\n", __FUNCTION__);
+		return;
+	}
+	_WriteReg8(reg, value);
+}
+
+
+void
+SerialDevice::_WriteReg8(int reg, uint8 value)
+{
 	switch (fBus) {
 	case B_ISA_BUS:
 		gISAModule->write_io_8(IOBase() + reg, value);
@@ -1092,7 +1162,7 @@ SerialDevice::WriteReg8(int reg, uint8 value)
 		gPCIModule->write_io_8(IOBase() + reg, value);
 		break;
 	default:
-		TRACE_ALWAYS("%s: unknown bus!\n", __FUNCTION__);
+		break;
 	//XXX:pcmcia ?
 	}
 	//spin(10000);

@@ -47,7 +47,8 @@ static	SerialDevice *			MakeDevice(struct serial_config_descriptor
 									void *buffer, size_t length);
 
 		bool					IsInterruptPending();
-		int32					InterruptHandler();
+		int32					HandleDPC();
+		void					DPCQueueFailed();
 
 		status_t				Open(uint32 flags);
 		status_t				Read(char *buffer, size_t *numBytes);
@@ -95,9 +96,14 @@ static	void					InterruptCallbackFunction(void *cookie,
 
 		uint8					ReadReg8(int reg);
 		void					WriteReg8(int reg, uint8 value);
+		void					_WriteReg8(int reg, uint8 value);
 		void					OrReg8(int reg, uint8 value);
 		void					AndReg8(int reg, uint8 value);
 		void					MaskReg8(int reg, uint8 value);
+		void					_FinishDPC();
+		void					_SetIER(uint8 value);
+		void					_UpdateIER(uint8 set, uint8 clear,
+									bool toggleTHRE = false);
 
 		const struct serial_support_descriptor	*fSupportDescriptor;
 		struct serial_config_descriptor		*fDevice;		// USB device handle
@@ -116,7 +122,8 @@ static	void					InterruptCallbackFunction(void *cookie,
 		/* deferred interrupt */
 		uint8					fCachedIER;	// last value written to IER
 		uint8					fCachedIIR;	// cached IRQ condition
-		int32					fPendingDPC; // some IRQ still
+		bool					fDPCActive;	// DPC reserved, queued, or running
+		spinlock				fInterruptLock;
 
 		/* data buffers */
 		char					fReadBuffer[DEF_BUFFER_SIZE];
