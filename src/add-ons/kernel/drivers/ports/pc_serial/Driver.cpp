@@ -635,7 +635,7 @@ pc_serial_dpc(void *arg)
 {
 	SerialDevice *master = (SerialDevice *)arg;
 	TRACE_FUNCALLS("> pc_serial_dpc(%p)\n", arg);
-	master->InterruptHandler();
+	master->HandleDPC();
 }
 
 
@@ -651,12 +651,14 @@ pc_serial_interrupt(void *arg)
 	if (device->IsInterruptPending()) {
 		status_t err;
 		err = gDPCModule->queue_dpc(gDPCHandle, pc_serial_dpc, device);
-		if (err != B_OK)
+		if (err != B_OK) {
+			device->DPCQueueFailed();
 			dprintf(DRIVER_NAME ": error queing irq: %s\n", strerror(err));
-		else {
-			TRACE_FUNCRET("< pc_serial_interrupt() returns: resched\n");
-			return B_INVOKE_SCHEDULER;
+			return B_HANDLED_INTERRUPT;
 		}
+
+		TRACE_FUNCRET("< pc_serial_interrupt() returns: resched\n");
+		return B_INVOKE_SCHEDULER;
 	}
 
 	TRACE_FUNCRET("< pc_serial_interrupt() returns: unhandled\n");
