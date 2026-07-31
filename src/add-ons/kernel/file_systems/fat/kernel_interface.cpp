@@ -886,6 +886,9 @@ dosfs_remove_vnode(fs_volume* volume, fs_vnode* vnode, bool reenter)
 	status_t status = B_OK;
 
 	if (bsdNode->v_type == VREG) {
+		locker.Unlock();
+		file_cache_set_size(bsdNode->v_cache, 0);
+		locker.Lock();
 		file_cache_delete(bsdNode->v_cache);
 		bsdNode->v_cache = NULL;
 		file_map_delete(bsdNode->v_file_map);
