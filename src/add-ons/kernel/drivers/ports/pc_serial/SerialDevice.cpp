@@ -14,42 +14,43 @@
 
 #include <sys/ioctl.h>
 
-SerialDevice::SerialDevice(const struct serial_support_descriptor *device,
-	uint32 ioBase, uint32 irq, const SerialDevice *master)
-	:	/*fSupportDescriptor(device->descriptor),
-		fDevice(device),
-		fDescription(device->descriptor->name),*/
-		fSupportDescriptor(device),
-		fDevice(NULL),
-		fDescription(device->name),
-		//
-		fDeviceOpen(false),
-		fDeviceRemoved(false),
-		fBus(device->bus),
-		fIOBase(ioBase),
-		fIRQ(irq),
-		fMaster(master),
-		fCachedIER(0x0),
-		fCachedIIR(0x1),
-		fDPCActive(false),
-		fReadBufferAvail(0),
-		fReadBufferIn(0),
-		fReadBufferOut(0),
-		fReadBufferSem(-1),
-		fWriteBufferAvail(0),
-		fWriteBufferIn(0),
-		fWriteBufferOut(0),
-		fWriteBufferSem(-1),
-		fDoneRead(-1),
-		fDoneWrite(-1),
-		fControlOut(0),
-		fInputStopped(false),
-		fMasterTTY(NULL),
-		fSlaveTTY(NULL),
-		fSystemTTYCookie(NULL),
-		fDeviceTTYCookie(NULL),
-		fDeviceThread(-1),
-		fStopDeviceThread(false)
+
+SerialDevice::SerialDevice(const struct serial_support_descriptor* device, uint32 ioBase,
+	uint32 irq, const SerialDevice* master)
+	: /*fSupportDescriptor(device->descriptor),
+	  fDevice(device),
+	  fDescription(device->descriptor->name),*/
+	fSupportDescriptor(device),
+	fDevice(NULL),
+	fDescription(device->name),
+	//
+	fDeviceOpen(false),
+	fDeviceRemoved(false),
+	fBus(device->bus),
+	fIOBase(ioBase),
+	fIRQ(irq),
+	fMaster(master),
+	fCachedIER(0x0),
+	fCachedIIR(0x1),
+	fDPCActive(false),
+	fReadBufferAvail(0),
+	fReadBufferIn(0),
+	fReadBufferOut(0),
+	fReadBufferSem(-1),
+	fWriteBufferAvail(0),
+	fWriteBufferIn(0),
+	fWriteBufferOut(0),
+	fWriteBufferSem(-1),
+	fDoneRead(-1),
+	fDoneWrite(-1),
+	fControlOut(0),
+	fInputStopped(false),
+	fMasterTTY(NULL),
+	fSlaveTTY(NULL),
+	fSystemTTYCookie(NULL),
+	fDeviceTTYCookie(NULL),
+	fDeviceThread(-1),
+	fStopDeviceThread(false)
 {
 	B_INITIALIZE_SPINLOCK(&fInterruptLock);
 	memset(&fTTYConfig, 0, sizeof(termios));
@@ -401,8 +402,7 @@ SerialDevice::IsInterruptPending()
 		// temporarily mask the IRQ
 		// else VirtualBox triggers one per every written byte it seems
 		// not sure it's required on real hardware
-		_WriteReg8(IER,
-			fCachedIER & ~(IER_RLS | IER_MS | IER_RDA | IER_THRE));
+		_WriteReg8(IER, fCachedIER & ~(IER_RLS | IER_MS | IER_RDA | IER_THRE));
 
 		fDPCActive = true;
 	}
@@ -423,7 +423,7 @@ SerialDevice::HandleDPC()
 	uint8 iir, lsr, msr;
 	uint8 buffer[64];
 	int tries = 8; // avoid busy looping
-	TRACE(("HandleDPC()\n"));
+	TRACE("HandleDPC()\n");
 
 	// start with the first (cached) irq condition
 	iir = fCachedIIR;
@@ -459,8 +459,7 @@ SerialDevice::HandleDPC()
 				// mask it until there's data again
 				_UpdateIER(0, IER_THRE);
 				// Avoid losing data queued between the empty check and masking THRE.
-				gTTYModule->tty_control(fDeviceTTYCookie, FIONREAD, &readable,
-					sizeof(readable));
+				gTTYModule->tty_control(fDeviceTTYCookie, FIONREAD, &readable, sizeof(readable));
 				if (readable > 0)
 					_UpdateIER(IER_THRE, 0);
 				break;
@@ -810,7 +809,7 @@ SerialDevice::Free()
 
 	// wait until currently executing DPC is done. In case another one
 	// is run beyond this point it will just bail out on !IsOpen().
-	//while (fDPCActive)
+	// while (fDPCActive)
 	//	snooze(1000);
 
 	gTTYModule->tty_destroy_cookie(fSystemTTYCookie);
@@ -1163,7 +1162,7 @@ SerialDevice::_WriteReg8(int reg, uint8 value)
 		break;
 	default:
 		break;
-	//XXX:pcmcia ?
+		// XXX:pcmcia ?
 	}
 	//spin(10000);
 }
