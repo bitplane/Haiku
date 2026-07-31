@@ -419,6 +419,7 @@ fs_remove_vnode(fs_volume* _volume, fs_vnode* _node, bool reenter)
 			node->lowntfs_close_state, node->lowntfs_ghost) != 0)
 		return errno;
 
+	file_cache_set_size(node->file_cache, 0);
 	file_cache_delete(node->file_cache);
 	delete node;
 	return B_OK;
