@@ -143,7 +143,8 @@ Icb::Icb(Volume *volume, long_address address)
 		}
 	}
 
-	if (IsFile()) {
+	if (IsFile()
+		&& _IcbTag().descriptor_flags() != ICB_DESCRIPTOR_TYPE_EMBEDDED) {
 		fFileCache = file_cache_create(fVolume->ID(), fId, Length());
 		fFileMap = file_map_create(fVolume->ID(), fId, Length());
 	}
@@ -346,7 +347,26 @@ Icb::Read(off_t pos, void *buffer, size_t *length, uint32 *block)
 		case ICB_DESCRIPTOR_TYPE_EMBEDDED:
 		{
 			TRACE(("Icb::Read: descriptor type: embedded\n"));
-			RETURN(B_ERROR);
+
+			uint8 *data = AllocationDescriptors();
+			uint8 *blockEnd = fData.Block() + fData.BlockSize();
+			uint32 dataLength = AllocationDescriptorsSize();
+			if (Length() != dataLength || data < fData.Block() || data > blockEnd
+				|| dataLength > uint32(blockEnd - data)) {
+				RETURN(B_BAD_DATA);
+			}
+
+			size_t bytesRead = *length;
+			size_t bytesLeft = dataLength - uint32(pos);
+			if (bytesRead > bytesLeft)
+				bytesRead = bytesLeft;
+
+			memcpy(buffer, data + pos, bytesRead);
+			*length = bytesRead;
+			if (block != NULL)
+				*block = to_long_address(fId).block();
+
+			RETURN(B_OK);
 			break;
 		}
 

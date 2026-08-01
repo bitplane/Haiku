@@ -373,10 +373,8 @@ udf_io(fs_volume *volume, fs_vnode *vnode, void *cookie, io_request *request)
 	}
 
 	Icb *icb = (Icb *)vnode->private_node;
-	if (icb->FileCache() == NULL) {
-		notify_io_request(request, B_BAD_VALUE);
-		return B_BAD_VALUE;
-	}
+	if (icb->FileCache() == NULL)
+		return B_UNSUPPORTED;
 
 	return do_iterative_fd_io(((Volume *)volume->private_volume)->Device(),
 		request, iterative_io_get_vecs_hook, iterative_io_finished_hook, icb);
